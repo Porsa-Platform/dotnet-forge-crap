@@ -316,6 +316,58 @@ Run("skips source files matching --exclude", () =>
     finally { TryDeleteDir(dir); }
 });
 
+const string ComplexCalc = """
+class Calc {
+    int Score(int a, int b, int c) {
+        int r = 0;
+        if (a > 0) { r += a; }
+        if (b > 0) { r += b; if (b > 10) r *= 2; }
+        if (c > 0) { r += c; for (int i = 0; i < c; i++) r += i; }
+        return r;
+    }
+}
+""";
+
+Run("exits with 2 when --fail-above is set and a method reaches the threshold", () =>
+{
+    var dir = PrepDir();
+    try
+    {
+        WriteCs(dir, "calc.cs", ComplexCalc);
+        WriteCobertura(Path.Combine(dir, "coverage.xml"), (Path.Combine(dir, "calc.cs"), new[] { (4, 0), (5, 0), (6, 0), (7, 0), (8, 0) }));
+        var (exit, stdout) = RunScript("--coverage", Path.Combine(dir, "coverage.xml"), "--threshold", "30", "--fail-above", dir);
+        AssertExit(2, exit);
+        AssertContains("Score", stdout);
+    }
+    finally { TryDeleteDir(dir); }
+});
+
+Run("exits with 0 when --fail-above is set and every method is below the threshold", () =>
+{
+    var dir = PrepDir();
+    try
+    {
+        WriteCs(dir, "calc.cs", ComplexCalc);
+        WriteCobertura(Path.Combine(dir, "coverage.xml"), (Path.Combine(dir, "calc.cs"), new[] { (4, 1), (5, 1), (6, 1), (7, 1), (8, 1) }));
+        var (exit, _) = RunScript("--coverage", Path.Combine(dir, "coverage.xml"), "--threshold", "30", "--fail-above", dir);
+        AssertExit(0, exit);
+    }
+    finally { TryDeleteDir(dir); }
+});
+
+Run("still exits with 0 above the threshold without --fail-above", () =>
+{
+    var dir = PrepDir();
+    try
+    {
+        WriteCs(dir, "calc.cs", ComplexCalc);
+        WriteCobertura(Path.Combine(dir, "coverage.xml"), (Path.Combine(dir, "calc.cs"), new[] { (4, 0), (5, 0), (6, 0), (7, 0), (8, 0) }));
+        var (exit, _) = RunScript("--coverage", Path.Combine(dir, "coverage.xml"), "--threshold", "30", dir);
+        AssertExit(0, exit);
+    }
+    finally { TryDeleteDir(dir); }
+});
+
 Console.WriteLine($"\nResult: {passed} passed, {failed} failed, {passed + failed} total");
 if (failed > 0) Environment.Exit(1);
 

@@ -27,6 +27,7 @@ var sourcePaths = new List<string>();
 var coveragePatterns = new List<string>();
 var excludePatterns = new List<string>();
 var runTests = true;
+var failAbove = false;
 var threshold = DefaultThreshold;
 var format = DefaultFormat;
 
@@ -53,6 +54,10 @@ for (var i = 0; i < argsCopy.Count; i++)
         case "--exclude":
             if (++i >= argsCopy.Count) { Console.Error.WriteLine("--exclude requires a glob pattern"); return 1; }
             excludePatterns.Add(argsCopy[i]);
+            break;
+
+        case "--fail-above":
+            failAbove = true;
             break;
 
         case "--format":
@@ -149,7 +154,9 @@ allEntries.Sort((a, b) =>
 });
 
 Console.WriteLine(FormatOutput(allEntries, threshold, format));
-return 0;
+
+// 1 is kept for usage and input errors, so a caller can tell them apart from a risky method.
+return failAbove && allEntries.Any(e => e.CrapScore >= threshold) ? 2 : 0;
 
 // ---- helpers -----------------------------------------------------------
 
@@ -167,6 +174,8 @@ Options:
                    first test project found.
   --exclude GLOB   Skip source files matching the pattern, relative to the source
                    path (e.g. **/Migrations/**, **/obj/**). Repeatable.
+  --fail-above     Exit with 2 when a method reaches the threshold (1 is kept
+                   for usage and input errors).
   --format F       Output format: text or json (default text).
   --json           Short for --format json.
   --help           Show this help message.

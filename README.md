@@ -80,6 +80,8 @@ Options:
                    first test project found.
   --exclude GLOB   Skip source files matching the pattern, relative to the source
                    path (e.g. **/Migrations/**, **/obj/**). Repeatable.
+  --fail-above     Exit with 2 when a method reaches the threshold (1 is kept
+                   for usage and input errors).
   --format F       Output format: text or json (default text).
   --json           Short for --format json.
   --help           Show this help message.
