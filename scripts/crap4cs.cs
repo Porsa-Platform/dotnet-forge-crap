@@ -25,6 +25,7 @@ const string DefaultFormat = "text";
 var argsCopy = args.ToList();
 var sourcePaths = new List<string>();
 var coveragePatterns = new List<string>();
+var excludePatterns = new List<string>();
 var runTests = true;
 var threshold = DefaultThreshold;
 var format = DefaultFormat;
@@ -47,6 +48,11 @@ for (var i = 0; i < argsCopy.Count; i++)
             if (++i >= argsCopy.Count) { Console.Error.WriteLine("--coverage requires a path"); return 1; }
             coveragePatterns.Add(argsCopy[i]);
             runTests = false;
+            break;
+
+        case "--exclude":
+            if (++i >= argsCopy.Count) { Console.Error.WriteLine("--exclude requires a glob pattern"); return 1; }
+            excludePatterns.Add(argsCopy[i]);
             break;
 
         case "--format":
@@ -119,7 +125,7 @@ else if (runTests)
     }
 }
 
-var files = GetFiles(sourcePaths).ToList();
+var files = GetFiles(sourcePaths, excludePatterns).ToList();
 var allEntries = new List<MethodEntry>();
 
 foreach (var file in files)
@@ -159,6 +165,8 @@ Options:
                    file is merged, keeping the highest hit count of each line.
                    If omitted, auto-runs dotnet test with XPlat Code Coverage on the
                    first test project found.
+  --exclude GLOB   Skip source files matching the pattern, relative to the source
+                   path (e.g. **/Migrations/**, **/obj/**). Repeatable.
   --format F       Output format: text or json (default text).
   --json           Short for --format json.
   --help           Show this help message.
@@ -246,16 +254,25 @@ static string NormalizePath(string path)
     catch { return path.Replace('\\', '/'); }
 }
 
-static IEnumerable<string> GetFiles(IReadOnlyList<string> paths)
+// Exclude patterns are matched against the path relative to the source directory, or to the
+// current directory for a file given by name.
+static IEnumerable<string> GetFiles(IReadOnlyList<string> paths, IReadOnlyList<string> excludePatterns)
 {
     foreach (var path in paths)
     {
         if (File.Exists(path) && path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
-            yield return Path.GetFullPath(path);
+        {
+            var excluded = new Matcher(StringComparison.OrdinalIgnoreCase);
+            excluded.AddIncludePatterns(excludePatterns);
+            if (!excluded.Match(Directory.GetCurrentDirectory(), Path.GetFullPath(path)).HasMatches)
+                yield return Path.GetFullPath(path);
+        }
         else if (Directory.Exists(path))
         {
-            foreach (var file in Directory.EnumerateFiles(
-                path, "*.cs", SearchOption.AllDirectories))
+            var matcher = new Matcher(StringComparison.OrdinalIgnoreCase);
+            matcher.AddInclude("**/*.cs");
+            matcher.AddExcludePatterns(excludePatterns);
+            foreach (var file in matcher.GetResultsInFullPath(path).OrderBy(f => f, StringComparer.Ordinal))
                 yield return Path.GetFullPath(file);
         }
     }

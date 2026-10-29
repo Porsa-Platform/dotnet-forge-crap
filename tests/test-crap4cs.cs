@@ -297,6 +297,25 @@ Run("exits with 1 when a coverage pattern matches no file", () =>
     finally { TryDeleteDir(dir); }
 });
 
+Run("skips source files matching --exclude", () =>
+{
+    var dir = PrepDir();
+    try
+    {
+        WriteCs(dir, "Keep.cs", "class Keep { int A() { return 1; } }");
+        Directory.CreateDirectory(Path.Combine(dir, "Migrations"));
+        WriteCs(dir, Path.Combine("Migrations", "Initial.cs"), "class Initial { int B() { return 1; } }");
+        Directory.CreateDirectory(Path.Combine(dir, "obj", "Debug"));
+        WriteCs(dir, Path.Combine("obj", "Debug", "Generated.cs"), "class Generated { int C() { return 1; } }");
+        var (exit, stdout) = RunScript("--exclude", "**/Migrations/**", "--exclude", "**/obj/**", "--threshold", "0", "--json", dir);
+        AssertExit(0, exit);
+        var methods = JsonDocument.Parse(stdout).RootElement.GetProperty("crap_report").GetProperty("methods");
+        AssertEq(1, methods.GetArrayLength());
+        AssertEq("A", methods[0].GetProperty("method").GetString());
+    }
+    finally { TryDeleteDir(dir); }
+});
+
 Console.WriteLine($"\nResult: {passed} passed, {failed} failed, {passed + failed} total");
 if (failed > 0) Environment.Exit(1);
 

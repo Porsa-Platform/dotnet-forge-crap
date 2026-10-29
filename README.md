@@ -78,6 +78,8 @@ Options:
                    file is merged, keeping the highest hit count of each line.
                    If omitted, auto-runs dotnet test with XPlat Code Coverage on the
                    first test project found.
+  --exclude GLOB   Skip source files matching the pattern, relative to the source
+                   path (e.g. **/Migrations/**, **/obj/**). Repeatable.
   --format F       Output format: text or json (default text).
   --json           Short for --format json.
   --help           Show this help message.
