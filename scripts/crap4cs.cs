@@ -296,11 +296,7 @@ static bool MergeCobertura(string path, Dictionary<string, Dictionary<int, int>>
     return true;
 }
 
-static string NormalizePath(string path)
-{
-    try { return Path.GetFullPath(path).Replace('\\', '/'); }
-    catch { return path.Replace('\\', '/'); }
-}
+static string NormalizePath(string path) => PathNormalizer.Normalize(path);
 
 // Exclude patterns are matched against the path relative to the source directory, or to the
 // current directory for a file given by name.
@@ -582,6 +578,47 @@ static string? FindCoverageXml(string testProjectDir)
 
 // ---- types ---------------------------------------------------------------
 
+// Full path with forward slashes and symbolic links resolved. Coverlet writes real paths, so a
+// source read through a link (macOS /var -> /private/var, a linked checkout) would match nothing.
+static class PathNormalizer
+{
+    private static readonly Dictionary<string, string> Cache = new(StringComparer.Ordinal);
+
+    public static string Normalize(string path)
+    {
+        string full;
+        try { full = Path.GetFullPath(path); }
+        catch { return path.Replace('\\', '/'); }
+
+        if (Cache.TryGetValue(full, out var known))
+            return known;
+
+        var resolved = ResolveLinks(full).Replace('\\', '/');
+        Cache[full] = resolved;
+        return resolved;
+    }
+
+    private static string ResolveLinks(string full)
+    {
+        var root = Path.GetPathRoot(full) ?? "";
+        var current = root;
+        foreach (var segment in full[root.Length..].Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
+        {
+            current = Path.Combine(current, segment);
+            try
+            {
+                FileSystemInfo info = Directory.Exists(current) ? new DirectoryInfo(current) : new FileInfo(current);
+                // The target can itself go through a link (link -> /var/... with /var -> /private/var).
+                if (info.LinkTarget != null && info.ResolveLinkTarget(returnFinalTarget: true) is { } target)
+                    current = ResolveLinks(target.FullName);
+            }
+            catch { }
+        }
+        return current;
+    }
+}
+
+
 sealed record MethodEntry(
     string File,
     string ClassName,
@@ -764,11 +801,7 @@ sealed class MemberExtractorWalker : CSharpSyntaxWalker
         return string.Join(".", parts);
     }
 
-    private static string NormalizePath(string path)
-    {
-        try { return Path.GetFullPath(path).Replace('\\', '/'); }
-        catch { return path.Replace('\\', '/'); }
-    }
+    private static string NormalizePath(string path) => PathNormalizer.Normalize(path);
 
     internal static double ComputeCrapScore(int complexity, double coverage)
     {

@@ -470,6 +470,25 @@ Run("exits with 1 on an unknown --missing-coverage mode", () =>
     AssertExit(1, exit);
 });
 
+Run("matches coverage written with the real path of a symlinked source directory", () =>
+{
+    var dir = PrepDir();
+    try
+    {
+        var real = Path.Combine(dir, "real");
+        Directory.CreateDirectory(real);
+        WriteCs(real, "simple.cs", SimpleUtil);
+        var link = Path.Combine(dir, "link");
+        Directory.CreateSymbolicLink(link, real);
+        // Coverlet writes the real path of the source, not the path it was read through.
+        WriteCobertura(Path.Combine(dir, "coverage.xml"), (Path.Combine(real, "simple.cs"), new[] { (3, 1) }));
+        var (exit, stdout) = RunScript("--coverage", Path.Combine(dir, "coverage.xml"), "--threshold", "0", "--json", link);
+        AssertExit(0, exit);
+        AssertEq(1.0, FirstMethod(stdout).GetProperty("coverage").GetDouble());
+    }
+    finally { TryDeleteDir(dir); }
+});
+
 Console.WriteLine($"\nResult: {passed} passed, {failed} failed, {passed + failed} total");
 if (failed > 0) Environment.Exit(1);
 
