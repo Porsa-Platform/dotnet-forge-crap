@@ -171,6 +171,18 @@ SimpleMethod                   MyApp.Util                               1  100.0
 }
 ```
 
+## Upgrading
+
+Existing options and exit codes keep working, and the new ones are opt-in. Some results change, because they fix the way scores were computed:
+
+- **Complexity**: switch expression arms (except `_`) and `or`/`and` patterns now count, and a local function no longer adds to its enclosing method. Scores of such methods move, and can cross the threshold either way.
+- **Coverage**: a line listed several times keeps its highest hit count instead of the first one read, so some methods report more coverage.
+- **Paths**: the `file` of a method is its real path, with symbolic links resolved (on macOS, `/tmp/...` is reported as `/private/tmp/...`).
+- **Numbers**: the text report prints decimals with a dot whatever the system culture (`100.0%`, not `100,0%`). `--threshold` accepts a dot or a comma.
+- **Coverage files**: a valid report that lists no class is accepted (methods show N/A) instead of failing with "Could not parse coverage file". A `--coverage` path with `*` or `?` is a glob pattern.
+- **Auto-run**: the test run is no longer stopped after two minutes, which used to crash the script; a test run that never ends now blocks it.
+- **JSON**: each method gets `start_line` and `end_line`.
+
 ## Dependencies
 
 - [Microsoft.CodeAnalysis.CSharp](https://www.nuget.org/packages/Microsoft.CodeAnalysis.CSharp/) — Roslyn syntax tree analysis
