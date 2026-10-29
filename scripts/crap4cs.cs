@@ -159,6 +159,13 @@ static Dictionary<string, Dictionary<int, int>>? ParseCobertura(string path)
     var root = doc.Root;
     if (root == null) return null;
 
+    // Cobertura's <class filename="..."> may be relative to <sources><source>, some XML
+    // file's own location or the process cwd (dotnet's Coverlet writer emits e.g.
+    // "Modules\Workspace\...\Foo.cs" alongside a <source>...\Src\</source> base). Resolving
+    // filename alone with Path.GetFullPath silently resolves against cwd instead, so every
+    // class permanently fails to match real source paths and every score reports as N/A.
+    var sourceBase = root.Descendants("source").Select(s => s.Value?.Trim()).FirstOrDefault(s => !string.IsNullOrWhiteSpace(s));
+
     var result = new Dictionary<string, Dictionary<int, int>>(StringComparer.OrdinalIgnoreCase);
 
     foreach (var cls in root.Descendants("class"))
@@ -166,7 +173,10 @@ static Dictionary<string, Dictionary<int, int>>? ParseCobertura(string path)
         var filename = cls.Attribute("filename")?.Value;
         if (string.IsNullOrWhiteSpace(filename)) continue;
 
-        var fileKey = NormalizePath(filename);
+        var resolved = sourceBase is not null && !Path.IsPathRooted(filename)
+            ? Path.Combine(sourceBase, filename)
+            : filename;
+        var fileKey = NormalizePath(resolved);
         if (!result.TryGetValue(fileKey, out var lineMap))
         {
             lineMap = new Dictionary<int, int>();
