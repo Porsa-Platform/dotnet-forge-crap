@@ -28,6 +28,7 @@ var coveragePatterns = new List<string>();
 var excludePatterns = new List<string>();
 var runTests = true;
 var failAbove = false;
+var changedSince = (string?)null;
 var threshold = DefaultThreshold;
 var format = DefaultFormat;
 
@@ -54,6 +55,11 @@ for (var i = 0; i < argsCopy.Count; i++)
         case "--exclude":
             if (++i >= argsCopy.Count) { Console.Error.WriteLine("--exclude requires a glob pattern"); return 1; }
             excludePatterns.Add(argsCopy[i]);
+            break;
+
+        case "--changed-since":
+            if (++i >= argsCopy.Count) { Console.Error.WriteLine("--changed-since requires a git ref"); return 1; }
+            changedSince = argsCopy[i];
             break;
 
         case "--fail-above":
@@ -142,6 +148,13 @@ foreach (var file in files)
     allEntries.AddRange(entries);
 }
 
+if (changedSince != null)
+{
+    var changedLines = GetChangedLines(sourcePaths, changedSince);
+    if (changedLines == null) return 1;
+    allEntries.RemoveAll(e => !TouchesChangedLines(e, changedLines));
+}
+
 allEntries.Sort((a, b) =>
 {
     var aScore = a.CrapScore;
@@ -174,6 +187,9 @@ Options:
                    first test project found.
   --exclude GLOB   Skip source files matching the pattern, relative to the source
                    path (e.g. **/Migrations/**, **/obj/**). Repeatable.
+  --changed-since REF
+                   Keep only the methods with a line added or modified since the
+                   merge base of REF and HEAD (git diff REF...HEAD).
   --fail-above     Exit with 2 when a method reaches the threshold (1 is kept
                    for usage and input errors).
   --format F       Output format: text or json (default text).
@@ -311,6 +327,82 @@ static void ExtractMethodsFromNode(string filePath, SyntaxNode node,
     }
 }
 
+// Lines added or modified since the merge base of gitRef and HEAD, by file. A pure deletion
+// marks the line that follows it, so the method it was removed from still counts as changed.
+static Dictionary<string, HashSet<int>>? GetChangedLines(IReadOnlyList<string> sourcePaths, string gitRef)
+{
+    var result = new Dictionary<string, HashSet<int>>(StringComparer.OrdinalIgnoreCase);
+    var dirs = sourcePaths
+        .Select(p => Path.GetFullPath(Directory.Exists(p) ? p : Path.GetDirectoryName(Path.GetFullPath(p)) ?? "."))
+        .Distinct(StringComparer.OrdinalIgnoreCase);
+
+    foreach (var dir in dirs)
+    {
+        // --relative keeps paths relative to dir, which avoids comparing a symlinked temp path
+        // with the real path git reports for the repository root.
+        var (exitCode, output, error) = RunProcess("git", dir, "diff", "-U0", "--no-color", "--no-ext-diff", "--relative", $"{gitRef}...HEAD");
+        if (exitCode != 0)
+        {
+            Console.Error.WriteLine($"git diff against '{gitRef}' failed: {error.Trim()}");
+            return null;
+        }
+
+        HashSet<int>? lines = null;
+        foreach (var line in output.Split('\n'))
+        {
+            if (line.StartsWith("+++ "))
+            {
+                var target = line[4..].Trim();
+                lines = target == "/dev/null" ? null : GetOrAdd(result, NormalizePath(Path.Combine(dir, target.StartsWith("b/") ? target[2..] : target)));
+            }
+            else if (line.StartsWith("@@") && lines != null)
+            {
+                // @@ -old[,count] +new[,count] @@
+                var added = line.Split(' ')[2].TrimStart('+').Split(',');
+                var start = int.Parse(added[0]);
+                var count = added.Length > 1 ? int.Parse(added[1]) : 1;
+                if (count == 0)
+                    lines.Add(start + 1);
+                for (var n = start; n < start + count; n++)
+                    lines.Add(n);
+            }
+        }
+    }
+
+    return result;
+
+    static HashSet<int> GetOrAdd(Dictionary<string, HashSet<int>> map, string key)
+    {
+        if (!map.TryGetValue(key, out var set))
+            map[key] = set = [];
+        return set;
+    }
+}
+
+static bool TouchesChangedLines(MethodEntry entry, Dictionary<string, HashSet<int>> changedLines) =>
+    changedLines.TryGetValue(entry.File, out var lines)
+    && lines.Any(l => l >= entry.StartLine && l <= entry.EndLine);
+
+// Reads both streams while the process runs, so a chatty process cannot fill a pipe and hang.
+static (int ExitCode, string Output, string Error) RunProcess(string fileName, string workingDirectory, params string[] args)
+{
+    var psi = new ProcessStartInfo
+    {
+        FileName = fileName,
+        WorkingDirectory = workingDirectory,
+        RedirectStandardOutput = true,
+        RedirectStandardError = true,
+        UseShellExecute = false
+    };
+    foreach (var arg in args) psi.ArgumentList.Add(arg);
+
+    using var proc = Process.Start(psi)!;
+    var error = proc.StandardError.ReadToEndAsync();
+    var output = proc.StandardOutput.ReadToEnd();
+    proc.WaitForExit();
+    return (proc.ExitCode, output, error.Result);
+}
+
 static string FormatOutput(IReadOnlyList<MethodEntry> entries, double threshold, string format)
 {
     return format.ToLowerInvariant() switch
@@ -369,6 +461,8 @@ static string FormatJson(IReadOnlyList<MethodEntry> entries, double threshold)
                 file = e.File,
                 class_name = e.ClassName,
                 method = e.MethodName,
+                start_line = e.StartLine,
+                end_line = e.EndLine,
                 complexity = e.Complexity,
                 coverage = e.Coverage,
                 crap_score = e.CrapScore
@@ -469,6 +563,8 @@ sealed record MethodEntry(
     string File,
     string ClassName,
     string MethodName,
+    int StartLine,
+    int EndLine,
     int Complexity,
     double? Coverage,
     double? CrapScore
@@ -574,7 +670,7 @@ sealed class MemberExtractorWalker : CSharpSyntaxWalker
             var cov = ComputeCoverage(_filePath, startLine, endLine);
             var className = GetFullClassName(_currentType);
             _entries.Add(new MethodEntry(
-                NormalizePath(_filePath), className, node.Identifier.Text,
+                NormalizePath(_filePath), className, node.Identifier.Text, startLine, endLine,
                 complexity, cov, cov.HasValue ? ComputeCrapScore(complexity, cov.Value) : null));
         }
         base.VisitLocalFunctionStatement(node);
@@ -590,7 +686,7 @@ sealed class MemberExtractorWalker : CSharpSyntaxWalker
         var className = GetFullClassName(_currentType);
         var cov = ComputeCoverage(_filePath, startLine, endLine);
         _entries.Add(new MethodEntry(
-            NormalizePath(_filePath), className, name,
+            NormalizePath(_filePath), className, name, startLine, endLine,
             complexity, cov, cov.HasValue ? ComputeCrapScore(complexity, cov.Value) : null));
     }
 

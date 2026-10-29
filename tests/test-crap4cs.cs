@@ -368,6 +368,74 @@ Run("still exits with 0 above the threshold without --fail-above", () =>
     finally { TryDeleteDir(dir); }
 });
 
+Run("reports the start and end line of each method in JSON", () =>
+{
+    var dir = PrepDir();
+    try
+    {
+        WriteCs(dir, "simple.cs", SimpleUtil);
+        var (exit, stdout) = RunScript("--threshold", "0", "--json", "--coverage", WriteEmptyCoverage(dir), dir);
+        AssertExit(0, exit);
+        var method = FirstMethod(stdout);
+        AssertEq(2, method.GetProperty("start_line").GetInt32());
+        AssertEq(4, method.GetProperty("end_line").GetInt32());
+    }
+    finally { TryDeleteDir(dir); }
+});
+
+Run("keeps only the methods changed since a git ref with --changed-since", () =>
+{
+    var dir = PrepDir();
+    try
+    {
+        Git(dir, "init", "-q");
+        WriteCs(dir, "Pair.cs", """
+class Pair {
+    int Left(int a) {
+        return a;
+    }
+    int Right(int b) {
+        return b;
+    }
+}
+""");
+        Git(dir, "add", ".");
+        Git(dir, "commit", "-q", "-m", "initial");
+        WriteCs(dir, "Pair.cs", """
+class Pair {
+    int Left(int a) {
+        return a;
+    }
+    int Right(int b) {
+        return b + 1;
+    }
+}
+""");
+        Git(dir, "commit", "-q", "-am", "change Right");
+        var (exit, stdout) = RunScript("--changed-since", "HEAD~1", "--threshold", "0", "--json", "--coverage", WriteEmptyCoverage(dir), dir);
+        AssertExit(0, exit);
+        var methods = JsonDocument.Parse(stdout).RootElement.GetProperty("crap_report").GetProperty("methods");
+        AssertEq(1, methods.GetArrayLength());
+        AssertEq("Right", methods[0].GetProperty("method").GetString());
+    }
+    finally { TryDeleteDir(dir); }
+});
+
+Run("exits with 1 when --changed-since names an unknown ref", () =>
+{
+    var dir = PrepDir();
+    try
+    {
+        Git(dir, "init", "-q");
+        WriteCs(dir, "simple.cs", SimpleUtil);
+        Git(dir, "add", ".");
+        Git(dir, "commit", "-q", "-m", "initial");
+        var (exit, _) = RunScript("--changed-since", "no-such-ref", "--coverage", WriteEmptyCoverage(dir), dir);
+        AssertExit(1, exit);
+    }
+    finally { TryDeleteDir(dir); }
+});
+
 Console.WriteLine($"\nResult: {passed} passed, {failed} failed, {passed + failed} total");
 if (failed > 0) Environment.Exit(1);
 
@@ -457,6 +525,26 @@ static void WriteCobertura(string path, params (string File, (int Line, int Hits
                                             new XAttribute("number", l.Line),
                                             new XAttribute("hits", l.Hits)))))))))));
     doc.Save(path);
+}
+
+// A coverage file listing no line, to keep the tests from running dotnet test.
+static string WriteEmptyCoverage(string dir)
+{
+    var path = Path.Combine(dir, "empty-coverage.xml");
+    WriteCobertura(path);
+    return path;
+}
+
+static void Git(string dir, params string[] args)
+{
+    var psi = new ProcessStartInfo { FileName = "git", WorkingDirectory = dir, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+    psi.Environment["GIT_AUTHOR_NAME"] = psi.Environment["GIT_COMMITTER_NAME"] = "Tests";
+    psi.Environment["GIT_AUTHOR_EMAIL"] = psi.Environment["GIT_COMMITTER_EMAIL"] = "tests@example.com";
+    foreach (var a in args) psi.ArgumentList.Add(a);
+    using var proc = Process.Start(psi)!;
+    var error = proc.StandardError.ReadToEnd();
+    proc.WaitForExit();
+    if (proc.ExitCode != 0) throw new Exception($"git {string.Join(' ', args)} failed: {error}");
 }
 
 static JsonElement FirstMethod(string json) =>

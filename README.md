@@ -80,6 +80,9 @@ Options:
                    first test project found.
   --exclude GLOB   Skip source files matching the pattern, relative to the source
                    path (e.g. **/Migrations/**, **/obj/**). Repeatable.
+  --changed-since REF
+                   Keep only the methods with a line added or modified since the
+                   merge base of REF and HEAD (git diff REF...HEAD).
   --fail-above     Exit with 2 when a method reaches the threshold (1 is kept
                    for usage and input errors).
   --format F       Output format: text or json (default text).
@@ -123,6 +126,8 @@ SimpleMethod                   MyApp.Util                               1  100.0
 				"file": "/path/to/File.cs",
 				"class_name": "MyApp.Processor",
 				"method": "RiskyMethod",
+				"start_line": 12,
+				"end_line": 40,
 				"complexity": 14,
 				"coverage": 0.35,
 				"crap_score": 86.4
