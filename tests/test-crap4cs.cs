@@ -637,6 +637,75 @@ Run("exits with 1 when an affected test fails", () =>
     finally { TryDeleteDir(dir); }
 });
 
+static Dictionary<string, int> ComplexityByMethod(string dir, string source)
+{
+    WriteCs(dir, "code.cs", source);
+    var (exit, stdout) = RunScript("--coverage", WriteEmptyCoverage(dir), "--threshold", "0", "--json", dir);
+    AssertExit(0, exit);
+    return JsonDocument.Parse(stdout).RootElement.GetProperty("crap_report").GetProperty("methods")
+        .EnumerateArray().ToDictionary(m => m.GetProperty("method").GetString()!, m => m.GetProperty("complexity").GetInt32());
+}
+
+Run("counts each switch expression arm except the discard", () =>
+{
+    var dir = PrepDir();
+    try
+    {
+        var complexity = ComplexityByMethod(dir, """
+class Codes {
+    int Of(string s) => s switch
+    {
+        "a" => 1,
+        "b" => 2,
+        _ => 0
+    };
+}
+""");
+        AssertEq(3, complexity["Of"]);
+    }
+    finally { TryDeleteDir(dir); }
+});
+
+Run("counts the or and and patterns", () =>
+{
+    var dir = PrepDir();
+    try
+    {
+        var complexity = ComplexityByMethod(dir, """
+class Ranges {
+    bool Small(int x) => x is 1 or 2 or 3;
+    bool Between(int x) => x is > 0 and < 10;
+}
+""");
+        AssertEq(3, complexity["Small"]);
+        AssertEq(2, complexity["Between"]);
+    }
+    finally { TryDeleteDir(dir); }
+});
+
+Run("does not count a local function in the complexity of its method", () =>
+{
+    var dir = PrepDir();
+    try
+    {
+        var complexity = ComplexityByMethod(dir, """
+class Outer {
+    int Run() {
+        return Local(1);
+
+        int Local(int a) {
+            if (a > 0) return 1;
+            return 0;
+        }
+    }
+}
+""");
+        AssertEq(1, complexity["Run"]);
+        AssertEq(2, complexity["Local"]);
+    }
+    finally { TryDeleteDir(dir); }
+});
+
 Console.WriteLine($"\nResult: {passed} passed, {failed} failed, {passed + failed} total");
 if (failed > 0) Environment.Exit(1);
 

@@ -875,7 +875,7 @@ sealed class MemberExtractorWalker : CSharpSyntaxWalker
 
     private static int ComputeComplexity(SyntaxNode node)
     {
-        var walker = new ComplexityWalker();
+        var walker = new ComplexityWalker(node);
         walker.Visit(node);
         return walker.Complexity;
     }
@@ -922,9 +922,30 @@ sealed class MemberExtractorWalker : CSharpSyntaxWalker
     }
 }
 
-sealed class ComplexityWalker : CSharpSyntaxWalker
+sealed class ComplexityWalker(SyntaxNode root) : CSharpSyntaxWalker
 {
     public int Complexity = 1;
+
+    // A local function is reported on its own: its branches do not add to the enclosing method.
+    public override void VisitLocalFunctionStatement(LocalFunctionStatementSyntax node)
+    {
+        if (node == root)
+            base.VisitLocalFunctionStatement(node);
+    }
+
+    public override void VisitSwitchExpressionArm(SwitchExpressionArmSyntax node)
+    {
+        if (node.Pattern is not DiscardPatternSyntax)
+            Complexity++;
+        base.VisitSwitchExpressionArm(node);
+    }
+
+    public override void VisitBinaryPattern(BinaryPatternSyntax node)
+    {
+        if (node.IsKind(SyntaxKind.OrPattern) || node.IsKind(SyntaxKind.AndPattern))
+            Complexity++;
+        base.VisitBinaryPattern(node);
+    }
 
     public override void VisitIfStatement(IfStatementSyntax node)
     {

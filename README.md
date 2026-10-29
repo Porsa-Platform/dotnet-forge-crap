@@ -58,13 +58,15 @@ Each of these adds 1 to cyclomatic complexity:
 - `if` / `else if`
 - `for`, `foreach`, `while`, `do` loops
 - `case` labels (each)
+- switch expression arms (each, except the `_` discard)
+- `or` and `and` patterns
 - `catch` clauses
 - `&&`, `||` (conditional logical operators)
 - `?:` (ternary conditional)
 - `??` (null coalescing)
 - `?.` (conditional access)
 
-Base complexity is 1.
+Base complexity is 1. A local function is reported on its own and does not add to the complexity of its enclosing method.
 
 ## CLI
 
