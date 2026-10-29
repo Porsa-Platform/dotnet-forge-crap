@@ -184,6 +184,47 @@ class C {
     finally { TryDeleteDir(dir); }
 });
 
+Run("reads a decimal threshold whatever the system culture", () =>
+{
+    var dir = PrepDir();
+    try
+    {
+        WriteCs(dir, "simple.cs", """
+class Util {
+    int Add(int a, int b) {
+        return a + b;
+    }
+}
+""");
+        WriteCoverageXml(dir, "coverage.xml", "simple.cs", new[] { (3, 1) });
+        var (exit, stdout) = RunScriptWithCulture("fr_FR.UTF-8", "--coverage", Path.Combine(dir, "coverage.xml"), "--threshold", "0.5", dir);
+        AssertExit(0, exit);
+        AssertContains("Add", stdout);
+    }
+    finally { TryDeleteDir(dir); }
+});
+
+Run("prints decimals with a dot whatever the system culture", () =>
+{
+    var dir = PrepDir();
+    try
+    {
+        WriteCs(dir, "simple.cs", """
+class Util {
+    int Add(int a, int b) {
+        return a + b;
+    }
+}
+""");
+        WriteCoverageXml(dir, "coverage.xml", "simple.cs", new[] { (3, 1) });
+        var (exit, stdout) = RunScriptWithCulture("fr_FR.UTF-8", "--coverage", Path.Combine(dir, "coverage.xml"), "--threshold", "0", dir);
+        AssertExit(0, exit);
+        AssertContains("100.0%", stdout);
+        AssertContains("1.0", stdout);
+    }
+    finally { TryDeleteDir(dir); }
+});
+
 Console.WriteLine($"\nResult: {passed} passed, {failed} failed, {passed + failed} total");
 if (failed > 0) Environment.Exit(1);
 
@@ -255,7 +296,9 @@ static void WriteCoverageXml(string dir, string covFileName, string sourceFileNa
     doc.Save(Path.Combine(dir, covFileName));
 }
 
-static (int ExitCode, string Stdout) RunScript(params string[] args)
+static (int ExitCode, string Stdout) RunScript(params string[] args) => RunScriptWithCulture(null, args);
+
+static (int ExitCode, string Stdout) RunScriptWithCulture(string? culture, params string[] args)
 {
     var psi = new ProcessStartInfo
     {
@@ -264,6 +307,11 @@ static (int ExitCode, string Stdout) RunScript(params string[] args)
         RedirectStandardError = true,
         UseShellExecute = false
     };
+    if (culture is not null)
+    {
+        psi.Environment["LC_ALL"] = culture;
+        psi.Environment["LANG"] = culture;
+    }
     psi.ArgumentList.Add("run");
     psi.ArgumentList.Add("scripts/crap4cs.cs");
     psi.ArgumentList.Add("--");

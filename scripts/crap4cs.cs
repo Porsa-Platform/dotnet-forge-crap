@@ -5,12 +5,17 @@
 #:package Microsoft.CodeAnalysis.CSharp@4.14.0
 
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Xml.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+
+// Arguments and reports use a dot as decimal separator, whatever the system culture.
+CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
+CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
 
 const double DefaultThreshold = 30.0;
 const string DefaultFormat = "text";
