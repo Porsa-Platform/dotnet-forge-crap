@@ -706,6 +706,25 @@ class Outer {
     finally { TryDeleteDir(dir); }
 });
 
+Run("reads a threshold written with a decimal comma", () =>
+{
+    var dir = PrepDir();
+    try
+    {
+        WriteCs(dir, "simple.cs", SimpleUtil);
+        var (exit, stdout) = RunScriptWithCulture("fr_FR.UTF-8", "--coverage", WriteEmptyCoverage(dir), "--threshold", "30,5", "--json", dir);
+        AssertExit(0, exit);
+        AssertEq(30.5, JsonDocument.Parse(stdout).RootElement.GetProperty("crap_report").GetProperty("threshold").GetDouble());
+    }
+    finally { TryDeleteDir(dir); }
+});
+
+Run("exits with 1 on a threshold with thousands separators", () =>
+{
+    var (exit, _) = RunScript("--threshold", "1,000.5");
+    AssertExit(1, exit);
+});
+
 Console.WriteLine($"\nResult: {passed} passed, {failed} failed, {passed + failed} total");
 if (failed > 0) Environment.Exit(1);
 

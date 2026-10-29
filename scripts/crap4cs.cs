@@ -47,7 +47,7 @@ for (var i = 0; i < argsCopy.Count; i++)
 
         case "--threshold":
             if (++i >= argsCopy.Count) { Console.Error.WriteLine("--threshold requires a value"); return 1; }
-            if (!double.TryParse(argsCopy[i], out threshold)) { Console.Error.WriteLine($"Invalid threshold: {argsCopy[i]}"); return 1; }
+            if (!TryParseThreshold(argsCopy[i], out threshold)) { Console.Error.WriteLine($"Invalid threshold: {argsCopy[i]}"); return 1; }
             break;
 
         case "--coverage":
@@ -254,6 +254,11 @@ Console.WriteLine(FormatOutput(allEntries, threshold, format));
 return failAbove && allEntries.Any(e => e.CrapScore >= threshold) ? 2 : 0;
 
 // ---- helpers -----------------------------------------------------------
+
+// Accepts a dot or a comma as decimal separator (30.5, 30,5), as the threshold was read with the
+// system culture before. Thousands separators are refused instead of being misread (1,000.5).
+static bool TryParseThreshold(string value, out double threshold) =>
+    double.TryParse(value.Replace(',', '.'), NumberStyles.Float, CultureInfo.InvariantCulture, out threshold);
 
 static string Usage() => """
 CRAP4CS - Change Risk Anti-Pattern analysis for C#.
