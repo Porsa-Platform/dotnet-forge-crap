@@ -30,6 +30,9 @@ var runTests = true;
 var failAbove = false;
 var changedSince = (string?)null;
 var missingCoverage = "show";
+var affectedSince = (string?)null;
+var listAffected = false;
+var testSettings = (string?)null;
 var threshold = DefaultThreshold;
 var format = DefaultFormat;
 
@@ -69,6 +72,20 @@ for (var i = 0; i < argsCopy.Count; i++)
             if (missingCoverage is not ("show" or "zero" or "skip")) { Console.Error.WriteLine($"Unknown missing-coverage mode: {missingCoverage}"); return 1; }
             break;
 
+        case "--affected-since":
+            if (++i >= argsCopy.Count) { Console.Error.WriteLine("--affected-since requires a git ref"); return 1; }
+            affectedSince = argsCopy[i];
+            break;
+
+        case "--list-affected":
+            listAffected = true;
+            break;
+
+        case "--test-settings":
+            if (++i >= argsCopy.Count) { Console.Error.WriteLine("--test-settings requires a path"); return 1; }
+            testSettings = Path.GetFullPath(argsCopy[i]);
+            break;
+
         case "--fail-above":
             failAbove = true;
             break;
@@ -96,9 +113,58 @@ for (var i = 0; i < argsCopy.Count; i++)
 if (sourcePaths.Count == 0)
     sourcePaths.Add("src");
 
+// --affected-since judges the changed methods on the tests that can reach them.
+changedSince ??= affectedSince;
+Dictionary<string, HashSet<int>>? changedLines = null;
+if (changedSince != null)
+{
+    changedLines = GetChangedLines(sourcePaths, changedSince);
+    if (changedLines == null) return 1;
+}
+
 Dictionary<string, Dictionary<int, int>>? coverage = null;
 
-if (coveragePatterns.Count > 0)
+if (affectedSince != null && coveragePatterns.Count == 0)
+{
+    var affectedTests = FindAffectedTestProjects(sourcePaths, changedLines!.Keys);
+    if (listAffected)
+    {
+        foreach (var project in affectedTests)
+            Console.WriteLine(Path.GetRelativePath(Directory.GetCurrentDirectory(), project));
+        return 0;
+    }
+
+    coverage = new Dictionary<string, Dictionary<int, int>>(StringComparer.OrdinalIgnoreCase);
+    var resultsRoot = Path.Combine(Path.GetTempPath(), $"crap4cs-{Guid.NewGuid():N}");
+    try
+    {
+        foreach (var project in affectedTests)
+        {
+            Console.Error.WriteLine($"Running {Path.GetFileNameWithoutExtension(project)} with coverage...");
+            var resultsDir = Path.Combine(resultsRoot, Path.GetFileNameWithoutExtension(project));
+            var testArgs = new List<string> { "test", project, "--collect", "XPlat Code Coverage", "--results-directory", resultsDir };
+            if (testSettings != null) testArgs.AddRange(["--settings", testSettings]);
+
+            var (testExit, testOutput, testError) = RunProcess("dotnet", Directory.GetCurrentDirectory(), [.. testArgs]);
+            if (testExit != 0)
+            {
+                // Coverage of a failing run would hide the failure behind a score: stop here.
+                Console.Error.WriteLine(testOutput);
+                Console.Error.WriteLine(testError);
+                Console.Error.WriteLine($"Tests failed in {project} (exit code {testExit}).");
+                return 1;
+            }
+
+            foreach (var coverageFile in Directory.EnumerateFiles(resultsDir, "coverage.cobertura.xml", SearchOption.AllDirectories))
+                MergeCobertura(coverageFile, coverage);
+        }
+    }
+    finally
+    {
+        try { Directory.Delete(resultsRoot, true); } catch { }
+    }
+}
+else if (coveragePatterns.Count > 0)
 {
     coverage = new Dictionary<string, Dictionary<int, int>>(StringComparer.OrdinalIgnoreCase);
     foreach (var pattern in coveragePatterns)
@@ -168,12 +234,8 @@ else if (missingCoverage == "skip")
     allEntries.RemoveAll(e => e.Coverage == null);
 }
 
-if (changedSince != null)
-{
-    var changedLines = GetChangedLines(sourcePaths, changedSince);
-    if (changedLines == null) return 1;
+if (changedLines != null)
     allEntries.RemoveAll(e => !TouchesChangedLines(e, changedLines));
-}
 
 allEntries.Sort((a, b) =>
 {
@@ -213,6 +275,13 @@ Options:
   --missing-coverage MODE
                    What to do with a method that has no coverage data: show it as
                    N/A (default), count it as untested with zero, or skip it.
+  --affected-since REF
+                   Run, with coverage, only the test projects that contain or reference
+                   (transitively) a project changed since REF, then keep only the
+                   changed methods, as --changed-since REF does.
+  --list-affected  With --affected-since: print the selected test projects and exit.
+  --test-settings PATH
+                   .runsettings file passed to dotnet test by --affected-since.
   --fail-above     Exit with 2 when a method reaches the threshold (1 is kept
                    for usage and input errors).
   --format F       Output format: text or json (default text).
@@ -532,24 +601,67 @@ static string? FindTestProjectInDir(string dir)
     return null;
 }
 
-static int RunTests(string testProjectDir)
-{
-    var psi = new ProcessStartInfo
-    {
-        FileName = "dotnet",
-        RedirectStandardOutput = true,
-        RedirectStandardError = true,
-        UseShellExecute = false,
-        WorkingDirectory = testProjectDir
-    };
-    psi.ArgumentList.Add("test");
-    psi.ArgumentList.Add("--collect");
-    psi.ArgumentList.Add("XPlat Code Coverage");
+static int RunTests(string testProjectDir) =>
+    RunProcess("dotnet", testProjectDir, "test", "--collect", "XPlat Code Coverage").ExitCode;
 
-    using var proc = new Process { StartInfo = psi };
-    proc.Start();
-    proc.WaitForExit(120000);
-    return proc.ExitCode;
+// Test projects (Microsoft.NET.Test.Sdk) that contain a changed file or reference, directly or
+// through other projects, a project that does. Projects under bin/ or obj/ are ignored.
+static List<string> FindAffectedTestProjects(IReadOnlyList<string> sourcePaths, IEnumerable<string> changedFiles)
+{
+    var projects = sourcePaths
+        .Where(Directory.Exists)
+        .SelectMany(dir => Directory.EnumerateFiles(dir, "*.csproj", SearchOption.AllDirectories))
+        .Select(NormalizePath)
+        .Where(p => !p.Contains("/bin/") && !p.Contains("/obj/"))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToDictionary(p => p, ReadProject, StringComparer.OrdinalIgnoreCase);
+
+    var changedProjects = changedFiles
+        .Select(file => projects.Keys
+            .Where(p => file.StartsWith(Path.GetDirectoryName(p)!.Replace('\\', '/') + "/", StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(p => p.Length)
+            .FirstOrDefault())
+        .OfType<string>()
+        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    return projects
+        .Where(p => p.Value.IsTest && Closure(p.Key).Overlaps(changedProjects))
+        .Select(p => p.Key)
+        .OrderBy(p => p, StringComparer.Ordinal)
+        .ToList();
+
+    HashSet<string> Closure(string project)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var stack = new Stack<string>([project]);
+        while (stack.Count > 0)
+        {
+            var current = stack.Pop();
+            if (!seen.Add(current) || !projects.TryGetValue(current, out var info)) continue;
+            foreach (var reference in info.References) stack.Push(reference);
+        }
+        return seen;
+    }
+
+    static (bool IsTest, List<string> References) ReadProject(string path)
+    {
+        try
+        {
+            var doc = XDocument.Load(path);
+            var dir = Path.GetDirectoryName(path)!;
+            var references = doc.Descendants()
+                .Where(e => e.Name.LocalName == "ProjectReference")
+                .Select(e => e.Attribute("Include")?.Value)
+                .OfType<string>()
+                .Select(include => NormalizePath(Path.Combine(dir, include.Replace('\\', '/'))))
+                .ToList();
+            var isTest = doc.Descendants()
+                .Any(e => e.Name.LocalName == "PackageReference"
+                    && string.Equals(e.Attribute("Include")?.Value, "Microsoft.NET.Test.Sdk", StringComparison.OrdinalIgnoreCase));
+            return (isTest, references);
+        }
+        catch { return (false, []); }
+    }
 }
 
 static string? FindCoverageXml(string testProjectDir)
@@ -617,7 +729,6 @@ static class PathNormalizer
         return current;
     }
 }
-
 
 sealed record MethodEntry(
     string File,

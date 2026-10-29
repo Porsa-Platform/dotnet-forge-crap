@@ -86,6 +86,13 @@ Options:
   --missing-coverage MODE
                    What to do with a method that has no coverage data: show it as
                    N/A (default), count it as untested with zero, or skip it.
+  --affected-since REF
+                   Run, with coverage, only the test projects that contain or reference
+                   (transitively) a project changed since REF, then keep only the
+                   changed methods, as --changed-since REF does.
+  --list-affected  With --affected-since: print the selected test projects and exit.
+  --test-settings PATH
+                   .runsettings file passed to dotnet test by --affected-since.
   --fail-above     Exit with 2 when a method reaches the threshold (1 is kept
                    for usage and input errors).
   --format F       Output format: text or json (default text).
@@ -94,6 +101,26 @@ Options:
 ```
 
 If no source paths are given, defaults to `src`.
+
+### Affected Tests
+
+In a solution with many test projects, `--affected-since REF` judges a change on the tests that can reach it:
+
+1. Lists the `.cs` files changed since the merge base of `REF` and `HEAD`.
+2. Finds the project of each file (nearest `.csproj`), then every test project (`Microsoft.NET.Test.Sdk`) that contains it or references it, directly or through other projects.
+3. Runs `dotnet test --collect "XPlat Code Coverage"` on each of them, and stops with exit code 1 if a test fails.
+4. Merges their coverage and reports only the methods with a changed line.
+
+```bash
+# Before a push: block when a changed method is risky
+dotnet scripts/crap4cs.cs -- Src --affected-since origin/main --missing-coverage zero \
+  --exclude "**/Migrations/**" --exclude "**/obj/**" --fail-above
+
+# See which test projects would run
+dotnet scripts/crap4cs.cs -- Src --affected-since origin/main --list-affected
+```
+
+Test projects without `Microsoft.NET.Test.Sdk` (for example those on Microsoft.Testing.Platform only) are not run.
 
 ### Coverage Auto-Discovery
 

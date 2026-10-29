@@ -489,6 +489,154 @@ Run("matches coverage written with the real path of a symlinked source directory
     finally { TryDeleteDir(dir); }
 });
 
+// Core <- Lib <- Lib.Tests, Other <- Other.Tests, and Lib <- App.Specs (a test project
+// without Microsoft.NET.Test.Sdk, like the specs that run on Microsoft.Testing.Platform).
+static void WriteSolution(string dir)
+{
+    WriteProject(dir, "Core", isTest: false);
+    WriteProject(dir, "Lib", isTest: false, "Core");
+    WriteProject(dir, "Lib.Tests", isTest: true, "Lib");
+    WriteProject(dir, "Other", isTest: false);
+    WriteProject(dir, "Other.Tests", isTest: true, "Other");
+    WriteProject(dir, "App.Specs", isTest: false, "Lib");
+    foreach (var project in new[] { "Core", "Lib", "Lib.Tests", "Other", "Other.Tests", "App.Specs" })
+        WriteCs(dir, Path.Combine(project, "Code.cs"), $"class {project.Replace(".", "")} {{ int A() {{ return 1; }} }}");
+    Git(dir, "init", "-q");
+    Git(dir, "add", ".");
+    Git(dir, "commit", "-q", "-m", "initial");
+}
+
+static void ChangeAndCommit(string dir, string project)
+{
+    WriteCs(dir, Path.Combine(project, "Code.cs"), $"class {project.Replace(".", "")} {{ int A() {{ return 2; }} }}");
+    Git(dir, "commit", "-q", "-am", $"change {project}");
+}
+
+static string[] ListAffected(string dir)
+{
+    var (exit, stdout) = RunScript("--affected-since", "HEAD~1", "--list-affected", dir);
+    AssertExit(0, exit);
+    return stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(Path.GetFileNameWithoutExtension).ToArray()!;
+}
+
+Run("selects the test projects that reference a changed project", () =>
+{
+    var dir = PrepDir();
+    try
+    {
+        WriteSolution(dir);
+        ChangeAndCommit(dir, "Lib");
+        AssertEq("Lib.Tests", string.Join(",", ListAffected(dir)));
+    }
+    finally { TryDeleteDir(dir); }
+});
+
+Run("selects the test projects that reference a changed project transitively", () =>
+{
+    var dir = PrepDir();
+    try
+    {
+        WriteSolution(dir);
+        ChangeAndCommit(dir, "Core");
+        AssertEq("Lib.Tests", string.Join(",", ListAffected(dir)));
+    }
+    finally { TryDeleteDir(dir); }
+});
+
+Run("selects a test project whose own code changed", () =>
+{
+    var dir = PrepDir();
+    try
+    {
+        WriteSolution(dir);
+        ChangeAndCommit(dir, "Other.Tests");
+        AssertEq("Other.Tests", string.Join(",", ListAffected(dir)));
+    }
+    finally { TryDeleteDir(dir); }
+});
+
+Run("selects no test project when no referenced code changed", () =>
+{
+    var dir = PrepDir();
+    try
+    {
+        WriteSolution(dir);
+        ChangeAndCommit(dir, "App.Specs");
+        AssertEq("", string.Join(",", ListAffected(dir)));
+    }
+    finally { TryDeleteDir(dir); }
+});
+
+// Lib.Calc.Add is tested by Lib.Tests; the second commit changes Add and adds an untested Risky method.
+static void WriteTestedLibrary(string dir, string assertion)
+{
+    WriteProject(dir, "Lib", isTest: false);
+    WriteProject(dir, "Lib.Tests", isTest: true, "Lib");
+    WriteCs(dir, Path.Combine("Lib", "Calc.cs"), """
+public class Calc {
+    public int Add(int a, int b) {
+        return a + b;
+    }
+}
+""");
+    WriteCs(dir, Path.Combine("Lib.Tests", "CalcTests.cs"), $$"""
+using Microsoft.VisualStudio.TestTools.UnitTesting;
+
+[TestClass]
+public class CalcTests {
+    [TestMethod]
+    public void Add_ReturnsTheSum() => {{assertion}};
+}
+""");
+    Git(dir, "init", "-q");
+    Git(dir, "add", ".");
+    Git(dir, "commit", "-q", "-m", "initial");
+    WriteCs(dir, Path.Combine("Lib", "Calc.cs"), """
+public class Calc {
+    public int Add(int a, int b) {
+        return b + a;
+    }
+    public int Risky(int a, int b, int c) {
+        int r = 0;
+        if (a > 0) { r += a; }
+        if (b > 0) { r += b; if (b > 10) r *= 2; }
+        if (c > 0) { r += c; for (int i = 0; i < c; i++) r += i; }
+        return r;
+    }
+}
+""");
+    Git(dir, "commit", "-q", "-am", "change Add, add Risky");
+}
+
+Run("runs the affected tests and scores the changed methods with their coverage", () =>
+{
+    var dir = PrepDir();
+    try
+    {
+        WriteTestedLibrary(dir, "Assert.AreEqual(3, new Calc().Add(1, 2))");
+        var (exit, stdout) = RunScript("--affected-since", "HEAD~1", "--missing-coverage", "zero", "--threshold", "0", "--json", dir);
+        AssertExit(0, exit);
+        var methods = JsonDocument.Parse(stdout).RootElement.GetProperty("crap_report").GetProperty("methods")
+            .EnumerateArray().ToDictionary(m => m.GetProperty("method").GetString()!, m => m.GetProperty("coverage").GetDouble());
+        AssertEq(1.0, methods["Add"]);
+        AssertEq(0.0, methods["Risky"]);
+    }
+    finally { TryDeleteDir(dir); }
+});
+
+Run("exits with 1 when an affected test fails", () =>
+{
+    var dir = PrepDir();
+    try
+    {
+        WriteTestedLibrary(dir, "Assert.AreEqual(4, new Calc().Add(1, 2))");
+        var (exit, _) = RunScript("--affected-since", "HEAD~1", dir);
+        AssertExit(1, exit);
+    }
+    finally { TryDeleteDir(dir); }
+});
+
 Console.WriteLine($"\nResult: {passed} passed, {failed} failed, {passed + failed} total");
 if (failed > 0) Environment.Exit(1);
 
@@ -578,6 +726,27 @@ static void WriteCobertura(string path, params (string File, (int Line, int Hits
                                             new XAttribute("number", l.Line),
                                             new XAttribute("hits", l.Hits)))))))))));
     doc.Save(path);
+}
+
+static void WriteProject(string dir, string name, bool isTest, params string[] references)
+{
+    Directory.CreateDirectory(Path.Combine(dir, name));
+    var packages = isTest ? """
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="MSTest" Version="3.8.3" />
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+""" : "";
+    var refs = string.Concat(references.Select(r => $"    <ProjectReference Include=\"..\\{r}\\{r}.csproj\" />\n"));
+    File.WriteAllText(Path.Combine(dir, name, $"{name}.csproj"), $"""
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+{packages}{refs}  </ItemGroup>
+</Project>
+""");
 }
 
 // A coverage file listing no line, to keep the tests from running dotnet test.
