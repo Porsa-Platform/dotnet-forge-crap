@@ -29,6 +29,7 @@ var excludePatterns = new List<string>();
 var runTests = true;
 var failAbove = false;
 var changedSince = (string?)null;
+var missingCoverage = "show";
 var threshold = DefaultThreshold;
 var format = DefaultFormat;
 
@@ -60,6 +61,12 @@ for (var i = 0; i < argsCopy.Count; i++)
         case "--changed-since":
             if (++i >= argsCopy.Count) { Console.Error.WriteLine("--changed-since requires a git ref"); return 1; }
             changedSince = argsCopy[i];
+            break;
+
+        case "--missing-coverage":
+            if (++i >= argsCopy.Count) { Console.Error.WriteLine("--missing-coverage requires a mode"); return 1; }
+            missingCoverage = argsCopy[i].ToLowerInvariant();
+            if (missingCoverage is not ("show" or "zero" or "skip")) { Console.Error.WriteLine($"Unknown missing-coverage mode: {missingCoverage}"); return 1; }
             break;
 
         case "--fail-above":
@@ -148,6 +155,19 @@ foreach (var file in files)
     allEntries.AddRange(entries);
 }
 
+// A method without coverage data belongs to code no test loads (or to lines Coverlet does not
+// instrument): "zero" counts it as untested, "skip" hides it, "show" reports it as N/A.
+if (missingCoverage == "zero")
+{
+    for (var i = 0; i < allEntries.Count; i++)
+        if (allEntries[i].Coverage == null)
+            allEntries[i] = allEntries[i] with { Coverage = 0.0, CrapScore = MemberExtractorWalker.ComputeCrapScore(allEntries[i].Complexity, 0.0) };
+}
+else if (missingCoverage == "skip")
+{
+    allEntries.RemoveAll(e => e.Coverage == null);
+}
+
 if (changedSince != null)
 {
     var changedLines = GetChangedLines(sourcePaths, changedSince);
@@ -190,6 +210,9 @@ Options:
   --changed-since REF
                    Keep only the methods with a line added or modified since the
                    merge base of REF and HEAD (git diff REF...HEAD).
+  --missing-coverage MODE
+                   What to do with a method that has no coverage data: show it as
+                   N/A (default), count it as untested with zero, or skip it.
   --fail-above     Exit with 2 when a method reaches the threshold (1 is kept
                    for usage and input errors).
   --format F       Output format: text or json (default text).
@@ -747,7 +770,7 @@ sealed class MemberExtractorWalker : CSharpSyntaxWalker
         catch { return path.Replace('\\', '/'); }
     }
 
-    private static double ComputeCrapScore(int complexity, double coverage)
+    internal static double ComputeCrapScore(int complexity, double coverage)
     {
         var cc = (double)complexity;
         var uncov = 1.0 - coverage;

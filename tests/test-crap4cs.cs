@@ -436,6 +436,40 @@ Run("exits with 1 when --changed-since names an unknown ref", () =>
     finally { TryDeleteDir(dir); }
 });
 
+Run("counts a method missing from the coverage as untested with --missing-coverage zero", () =>
+{
+    var dir = PrepDir();
+    try
+    {
+        WriteCs(dir, "calc.cs", ComplexCalc);
+        var (exit, stdout) = RunScript("--coverage", WriteEmptyCoverage(dir), "--missing-coverage", "zero", "--threshold", "30", "--fail-above", "--json", dir);
+        AssertExit(2, exit);
+        var method = FirstMethod(stdout);
+        AssertEq(0.0, method.GetProperty("coverage").GetDouble());
+        AssertEq(42.0, method.GetProperty("crap_score").GetDouble());
+    }
+    finally { TryDeleteDir(dir); }
+});
+
+Run("hides a method missing from the coverage with --missing-coverage skip", () =>
+{
+    var dir = PrepDir();
+    try
+    {
+        WriteCs(dir, "calc.cs", ComplexCalc);
+        var (exit, stdout) = RunScript("--coverage", WriteEmptyCoverage(dir), "--missing-coverage", "skip", "--threshold", "30", "--json", dir);
+        AssertExit(0, exit);
+        AssertEq(0, JsonDocument.Parse(stdout).RootElement.GetProperty("crap_report").GetProperty("methods").GetArrayLength());
+    }
+    finally { TryDeleteDir(dir); }
+});
+
+Run("exits with 1 on an unknown --missing-coverage mode", () =>
+{
+    var (exit, _) = RunScript("--missing-coverage", "maybe");
+    AssertExit(1, exit);
+});
+
 Console.WriteLine($"\nResult: {passed} passed, {failed} failed, {passed + failed} total");
 if (failed > 0) Environment.Exit(1);
 

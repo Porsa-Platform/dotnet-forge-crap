@@ -83,6 +83,9 @@ Options:
   --changed-since REF
                    Keep only the methods with a line added or modified since the
                    merge base of REF and HEAD (git diff REF...HEAD).
+  --missing-coverage MODE
+                   What to do with a method that has no coverage data: show it as
+                   N/A (default), count it as untested with zero, or skip it.
   --fail-above     Exit with 2 when a method reaches the threshold (1 is kept
                    for usage and input errors).
   --format F       Output format: text or json (default text).
