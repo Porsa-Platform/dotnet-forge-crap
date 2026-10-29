@@ -226,8 +226,17 @@ foreach (var file in files)
 if (missingCoverage == "zero")
 {
     for (var i = 0; i < allEntries.Count; i++)
-        if (allEntries[i].Coverage == null)
+        if (allEntries[i].Coverage == null && !allEntries[i].InMeasuredFile)
             allEntries[i] = allEntries[i] with { Coverage = 0.0, CrapScore = MemberExtractorWalker.ComputeCrapScore(allEntries[i].Complexity, 0.0) };
+
+    // In a file the report measures, a method with no line was left out by the coverage tool, not
+    // missed by the tests: calling it untested would turn an exclusion into a false 0%.
+    var notMeasured = allEntries.Where(e => e.Coverage == null && e.InMeasuredFile).ToList();
+    if (notMeasured.Count > 0)
+        Console.Error.WriteLine(
+            $"Warning: {notMeasured.Count} method(s) not measured although their file is in the coverage report " +
+            $"({string.Join(", ", notMeasured.Take(5).Select(e => $"{e.ClassName}.{e.MethodName}"))}{(notMeasured.Count > 5 ? ", ..." : "")}). " +
+            "Check the coverage exclusions: [CompilerGenerated], for instance, leaves out every async method.");
 }
 else if (missingCoverage == "skip")
 {
@@ -279,7 +288,9 @@ Options:
                    merge base of REF and HEAD (git diff REF...HEAD).
   --missing-coverage MODE
                    What to do with a method that has no coverage data: show it as
-                   N/A (default), count it as untested with zero, or skip it.
+                   N/A (default), count it as untested with zero, or skip it. With
+                   zero, a method of a file the report measures stays N/A with a
+                   warning: the coverage tool left it out, the tests did not miss it.
   --affected-since REF
                    Run, with coverage, only the test projects that contain or reference
                    (transitively) a project changed since REF, then keep only the
@@ -743,7 +754,8 @@ sealed record MethodEntry(
     int EndLine,
     int Complexity,
     double? Coverage,
-    double? CrapScore
+    double? CrapScore,
+    bool InMeasuredFile = false
 );
 
 sealed class MemberExtractorWalker : CSharpSyntaxWalker
@@ -847,7 +859,7 @@ sealed class MemberExtractorWalker : CSharpSyntaxWalker
             var className = GetFullClassName(_currentType);
             _entries.Add(new MethodEntry(
                 NormalizePath(_filePath), className, node.Identifier.Text, startLine, endLine,
-                complexity, cov, cov.HasValue ? ComputeCrapScore(complexity, cov.Value) : null));
+                complexity, cov, cov.HasValue ? ComputeCrapScore(complexity, cov.Value) : null, IsMeasuredFile()));
         }
         base.VisitLocalFunctionStatement(node);
     }
@@ -863,8 +875,10 @@ sealed class MemberExtractorWalker : CSharpSyntaxWalker
         var cov = ComputeCoverage(_filePath, startLine, endLine);
         _entries.Add(new MethodEntry(
             NormalizePath(_filePath), className, name, startLine, endLine,
-            complexity, cov, cov.HasValue ? ComputeCrapScore(complexity, cov.Value) : null));
+            complexity, cov, cov.HasValue ? ComputeCrapScore(complexity, cov.Value) : null, IsMeasuredFile()));
     }
+
+    private bool IsMeasuredFile() => _coverage != null && _coverage.ContainsKey(NormalizePath(_filePath));
 
     private static bool HasBody(SyntaxNode member) => member switch
     {

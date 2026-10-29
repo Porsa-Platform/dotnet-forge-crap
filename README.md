@@ -87,7 +87,9 @@ Options:
                    merge base of REF and HEAD (git diff REF...HEAD).
   --missing-coverage MODE
                    What to do with a method that has no coverage data: show it as
-                   N/A (default), count it as untested with zero, or skip it.
+                   N/A (default), count it as untested with zero, or skip it. With
+                   zero, a method of a file the report measures stays N/A with a
+                   warning: the coverage tool left it out, the tests did not miss it.
   --affected-since REF
                    Run, with coverage, only the test projects that contain or reference
                    (transitively) a project changed since REF, then keep only the

@@ -725,6 +725,23 @@ Run("exits with 1 on a threshold with thousands separators", () =>
     AssertExit(1, exit);
 });
 
+Run("keeps N/A with --missing-coverage zero for a method left out of a measured file", () =>
+{
+    var dir = PrepDir();
+    try
+    {
+        WriteCs(dir, "calc.cs", ComplexCalc);
+        // The file is in the report, but none of the lines of Score: Coverlet left the method out
+        // (an exclusion such as [CompilerGenerated] on async state machines), it is not untested.
+        WriteCobertura(Path.Combine(dir, "coverage.xml"), (Path.Combine(dir, "calc.cs"), new[] { (1, 1) }));
+        var (exit, stdout, stderr) = RunScriptWithStderr("--coverage", Path.Combine(dir, "coverage.xml"), "--missing-coverage", "zero", "--threshold", "30", "--fail-above", "--json", dir);
+        AssertExit(0, exit);
+        AssertEq(JsonValueKind.Null, FirstMethod(stdout).GetProperty("coverage").ValueKind);
+        AssertContains("not measured", stderr);
+    }
+    finally { TryDeleteDir(dir); }
+});
+
 Console.WriteLine($"\nResult: {passed} passed, {failed} failed, {passed + failed} total");
 if (failed > 0) Environment.Exit(1);
 
@@ -864,6 +881,14 @@ static (int ExitCode, string Stdout) RunScript(params string[] args) => RunScrip
 
 static (int ExitCode, string Stdout) RunScriptWithCulture(string? culture, params string[] args)
 {
+    var (exitCode, stdout, _) = RunScriptCore(culture, args);
+    return (exitCode, stdout);
+}
+
+static (int ExitCode, string Stdout, string Stderr) RunScriptWithStderr(params string[] args) => RunScriptCore(null, args);
+
+static (int ExitCode, string Stdout, string Stderr) RunScriptCore(string? culture, string[] args)
+{
     var psi = new ProcessStartInfo
     {
         FileName = "dotnet",
@@ -882,9 +907,10 @@ static (int ExitCode, string Stdout) RunScriptWithCulture(string? culture, param
     foreach (var a in args) psi.ArgumentList.Add(a);
     using var proc = new Process { StartInfo = psi };
     proc.Start();
+    var stderr = proc.StandardError.ReadToEndAsync();
     var stdout = proc.StandardOutput.ReadToEnd();
-    proc.WaitForExit(60000);
-    return (proc.ExitCode, stdout);
+    proc.WaitForExit();
+    return (proc.ExitCode, stdout, stderr.Result);
 }
 
 static void TryDeleteDir(string dir) { try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { } }
