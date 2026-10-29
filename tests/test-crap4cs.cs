@@ -225,6 +225,78 @@ class Util {
     finally { TryDeleteDir(dir); }
 });
 
+const string SimpleUtil = """
+class Util {
+    int Add(int a, int b) {
+        return a + b;
+    }
+}
+""";
+
+Run("keeps the highest hit count when a line appears in several classes", () =>
+{
+    var dir = PrepDir();
+    try
+    {
+        WriteCs(dir, "simple.cs", SimpleUtil);
+        // Coverlet lists the lines of an async method under its state machine class too.
+        WriteCobertura(Path.Combine(dir, "coverage.xml"),
+            (Path.Combine(dir, "simple.cs"), new[] { (3, 0) }),
+            (Path.Combine(dir, "simple.cs"), new[] { (3, 4) }));
+        var (exit, stdout) = RunScript("--coverage", Path.Combine(dir, "coverage.xml"), "--threshold", "0", "--json", dir);
+        AssertExit(0, exit);
+        AssertEq(1.0, FirstMethod(stdout).GetProperty("coverage").GetDouble());
+    }
+    finally { TryDeleteDir(dir); }
+});
+
+Run("merges several coverage files given with --coverage", () =>
+{
+    var dir = PrepDir();
+    try
+    {
+        WriteCs(dir, "simple.cs", SimpleUtil);
+        WriteCobertura(Path.Combine(dir, "unit.xml"), (Path.Combine(dir, "simple.cs"), new[] { (3, 1) }));
+        WriteCobertura(Path.Combine(dir, "specs.xml"), (Path.Combine(dir, "simple.cs"), new[] { (3, 0) }));
+        var (exit, stdout) = RunScript(
+            "--coverage", Path.Combine(dir, "unit.xml"),
+            "--coverage", Path.Combine(dir, "specs.xml"),
+            "--threshold", "0", "--json", dir);
+        AssertExit(0, exit);
+        AssertEq(1.0, FirstMethod(stdout).GetProperty("coverage").GetDouble());
+    }
+    finally { TryDeleteDir(dir); }
+});
+
+Run("finds coverage files with a glob pattern", () =>
+{
+    var dir = PrepDir();
+    try
+    {
+        WriteCs(dir, "simple.cs", SimpleUtil);
+        var results = Path.Combine(dir, "TestResults");
+        Directory.CreateDirectory(Path.Combine(results, "a"));
+        Directory.CreateDirectory(Path.Combine(results, "b"));
+        WriteCobertura(Path.Combine(results, "a", "coverage.cobertura.xml"), (Path.Combine(dir, "simple.cs"), new[] { (3, 0) }));
+        WriteCobertura(Path.Combine(results, "b", "coverage.cobertura.xml"), (Path.Combine(dir, "simple.cs"), new[] { (3, 2) }));
+        var (exit, stdout) = RunScript("--coverage", Path.Combine(results, "**", "coverage.cobertura.xml"), "--threshold", "0", "--json", dir);
+        AssertExit(0, exit);
+        AssertEq(1.0, FirstMethod(stdout).GetProperty("coverage").GetDouble());
+    }
+    finally { TryDeleteDir(dir); }
+});
+
+Run("exits with 1 when a coverage pattern matches no file", () =>
+{
+    var dir = PrepDir();
+    try
+    {
+        var (exit, _) = RunScript("--coverage", Path.Combine(dir, "**", "coverage.cobertura.xml"), dir);
+        AssertExit(1, exit);
+    }
+    finally { TryDeleteDir(dir); }
+});
+
 Console.WriteLine($"\nResult: {passed} passed, {failed} failed, {passed + failed} total");
 if (failed > 0) Environment.Exit(1);
 
@@ -295,6 +367,29 @@ static void WriteCoverageXml(string dir, string covFileName, string sourceFileNa
     );
     doc.Save(Path.Combine(dir, covFileName));
 }
+
+static void WriteCobertura(string path, params (string File, (int Line, int Hits)[] Lines)[] classes)
+{
+    var doc = new XDocument(
+        new XElement("coverage",
+            new XElement("packages",
+                new XElement("package",
+                    new XAttribute("name", "Test"),
+                    new XElement("classes",
+                        classes.Select((c, i) =>
+                            new XElement("class",
+                                new XAttribute("name", $"Test{i}"),
+                                new XAttribute("filename", c.File),
+                                new XElement("lines",
+                                    c.Lines.Select(l =>
+                                        new XElement("line",
+                                            new XAttribute("number", l.Line),
+                                            new XAttribute("hits", l.Hits)))))))))));
+    doc.Save(path);
+}
+
+static JsonElement FirstMethod(string json) =>
+    JsonDocument.Parse(json).RootElement.GetProperty("crap_report").GetProperty("methods")[0];
 
 static (int ExitCode, string Stdout) RunScript(params string[] args) => RunScriptWithCulture(null, args);
 

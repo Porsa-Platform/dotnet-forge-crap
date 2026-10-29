@@ -13,6 +13,9 @@ dotnet scripts/crap4cs.cs --
 # Analyze with an existing coverage file
 dotnet scripts/crap4cs.cs -- --coverage path/to/coverage.cobertura.xml
 
+# Merge every coverage file of a multi-project solution
+dotnet scripts/crap4cs.cs -- --coverage "TestResults/**/coverage.cobertura.xml"
+
 # Analyze specific source paths
 dotnet scripts/crap4cs.cs -- src/MyApp src/MyLib
 
@@ -28,7 +31,7 @@ dotnet scripts/crap4cs.cs -- --json
 crap4cs works in three steps:
 
 1. **Parse source files** — uses Roslyn to extract every method, constructor, property accessor, and local function, computing cyclomatic complexity for each.
-2. **Get coverage data** — either from a Cobertura XML file (`--coverage`) or by auto-detecting a test project and running `dotnet test --collect:"XPlat Code Coverage"`.
+2. **Get coverage data** — either from Cobertura XML files (`--coverage`, merged when several are given) or by auto-detecting a test project and running `dotnet test --collect:"XPlat Code Coverage"`.
 3. **Compute CRAP scores** — matches coverage data to methods by file and line range, then applies the CRAP formula.
 
 ## CRAP Formula
@@ -70,8 +73,11 @@ Usage: dotnet scripts/crap4cs.cs -- [options] [source-path ...]
 
 Options:
   --threshold N    CRAP score threshold (default 30). Methods below are hidden.
-  --coverage PATH  Path to Cobertura XML coverage file. If omitted, auto-runs
-                   dotnet test with XPlat Code Coverage on the first test project found.
+  --coverage PATH  Cobertura XML coverage file, or a glob pattern such as
+                   TestResults/**/coverage.cobertura.xml. Repeatable: every matching
+                   file is merged, keeping the highest hit count of each line.
+                   If omitted, auto-runs dotnet test with XPlat Code Coverage on the
+                   first test project found.
   --format F       Output format: text or json (default text).
   --json           Short for --format json.
   --help           Show this help message.

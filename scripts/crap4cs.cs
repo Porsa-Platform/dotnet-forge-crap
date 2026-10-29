@@ -3,6 +3,7 @@
 #:property TargetFramework=net10.0
 #:property PublishAot=false
 #:package Microsoft.CodeAnalysis.CSharp@4.14.0
+#:package Microsoft.Extensions.FileSystemGlobbing@9.0.0
 
 using System.Diagnostics;
 using System.Globalization;
@@ -12,6 +13,7 @@ using System.Xml.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.Extensions.FileSystemGlobbing;
 
 // Arguments and reports use a dot as decimal separator, whatever the system culture.
 CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
@@ -22,7 +24,7 @@ const string DefaultFormat = "text";
 
 var argsCopy = args.ToList();
 var sourcePaths = new List<string>();
-var coveragePath = (string?)null;
+var coveragePatterns = new List<string>();
 var runTests = true;
 var threshold = DefaultThreshold;
 var format = DefaultFormat;
@@ -43,7 +45,7 @@ for (var i = 0; i < argsCopy.Count; i++)
 
         case "--coverage":
             if (++i >= argsCopy.Count) { Console.Error.WriteLine("--coverage requires a path"); return 1; }
-            coveragePath = argsCopy[i];
+            coveragePatterns.Add(argsCopy[i]);
             runTests = false;
             break;
 
@@ -72,13 +74,21 @@ if (sourcePaths.Count == 0)
 
 Dictionary<string, Dictionary<int, int>>? coverage = null;
 
-if (coveragePath != null)
+if (coveragePatterns.Count > 0)
 {
-    if (!File.Exists(coveragePath))
-    { Console.Error.WriteLine($"Coverage file not found: {coveragePath}"); return 1; }
-    coverage = ParseCobertura(coveragePath);
-    if (coverage == null)
-    { Console.Error.WriteLine($"Could not parse coverage file: {coveragePath}"); return 1; }
+    coverage = new Dictionary<string, Dictionary<int, int>>(StringComparer.OrdinalIgnoreCase);
+    foreach (var pattern in coveragePatterns)
+    {
+        var coverageFiles = ResolveCoverageFiles(pattern);
+        if (coverageFiles.Count == 0)
+        { Console.Error.WriteLine($"Coverage file not found: {pattern}"); return 1; }
+
+        foreach (var coverageFile in coverageFiles)
+        {
+            if (!MergeCobertura(coverageFile, coverage))
+            { Console.Error.WriteLine($"Could not parse coverage file: {coverageFile}"); return 1; }
+        }
+    }
 }
 else if (runTests)
 {
@@ -90,7 +100,11 @@ else if (runTests)
         {
             var covFile = FindCoverageXml(testDir);
             if (covFile != null)
-                coverage = ParseCobertura(covFile);
+            {
+                coverage = new Dictionary<string, Dictionary<int, int>>(StringComparer.OrdinalIgnoreCase);
+                if (!MergeCobertura(covFile, coverage))
+                    coverage = null;
+            }
             else
                 Console.Error.WriteLine("Warning: tests passed but no coverage XML found in TestResults/.");
         }
@@ -140,8 +154,11 @@ Usage: dotnet scripts/crap4cs.cs -- [options] [source-path ...]
 
 Options:
   --threshold N    CRAP score threshold (default 30). Methods below are hidden.
-  --coverage PATH  Path to Cobertura XML coverage file. If omitted, auto-runs
-                   dotnet test with XPlat Code Coverage on the first test project found.
+  --coverage PATH  Cobertura XML coverage file, or a glob pattern such as
+                   TestResults/**/coverage.cobertura.xml. Repeatable: every matching
+                   file is merged, keeping the highest hit count of each line.
+                   If omitted, auto-runs dotnet test with XPlat Code Coverage on the
+                   first test project found.
   --format F       Output format: text or json (default text).
   --json           Short for --format json.
   --help           Show this help message.
@@ -158,11 +175,35 @@ Score interpretation:
   30+    High risk - complex and under-tested code
 """;
 
-static Dictionary<string, Dictionary<int, int>>? ParseCobertura(string path)
+// A plain path is returned as is when it exists; a pattern with * or ? is matched from
+// the longest leading directory that has no wildcard.
+static List<string> ResolveCoverageFiles(string pattern)
 {
-    var doc = XDocument.Load(path);
+    if (pattern.IndexOfAny(['*', '?']) < 0)
+        return File.Exists(pattern) ? [Path.GetFullPath(pattern)] : [];
+
+    var segments = pattern.Replace('\\', '/').Split('/');
+    var wildcardIndex = Array.FindIndex(segments, s => s.IndexOfAny(['*', '?']) >= 0);
+    var baseDir = string.Join('/', segments.Take(wildcardIndex));
+    if (baseDir.Length == 0)
+        baseDir = pattern.StartsWith('/') ? "/" : ".";
+    if (!Directory.Exists(baseDir))
+        return [];
+
+    var matcher = new Matcher(StringComparison.OrdinalIgnoreCase);
+    matcher.AddInclude(string.Join('/', segments.Skip(wildcardIndex)));
+    return matcher.GetResultsInFullPath(baseDir).OrderBy(f => f, StringComparer.Ordinal).ToList();
+}
+
+// Adds the lines of a Cobertura file to the coverage map. A line can be listed several times,
+// by several classes (async state machines, lambdas) or several reports: the highest hit count wins.
+static bool MergeCobertura(string path, Dictionary<string, Dictionary<int, int>> result)
+{
+    XDocument doc;
+    try { doc = XDocument.Load(path); }
+    catch { return false; }
     var root = doc.Root;
-    if (root == null) return null;
+    if (root == null) return false;
 
     // Cobertura's <class filename="..."> may be relative to <sources><source>, some XML
     // file's own location or the process cwd (dotnet's Coverlet writer emits e.g.
@@ -170,8 +211,6 @@ static Dictionary<string, Dictionary<int, int>>? ParseCobertura(string path)
     // filename alone with Path.GetFullPath silently resolves against cwd instead, so every
     // class permanently fails to match real source paths and every score reports as N/A.
     var sourceBase = root.Descendants("source").Select(s => s.Value?.Trim()).FirstOrDefault(s => !string.IsNullOrWhiteSpace(s));
-
-    var result = new Dictionary<string, Dictionary<int, int>>(StringComparer.OrdinalIgnoreCase);
 
     foreach (var cls in root.Descendants("class"))
     {
@@ -194,11 +233,11 @@ static Dictionary<string, Dictionary<int, int>>? ParseCobertura(string path)
             var hitsStr = line.Attribute("hits")?.Value;
             if (numStr == null || hitsStr == null) continue;
             if (int.TryParse(numStr, out var num) && int.TryParse(hitsStr, out var hits))
-                lineMap.TryAdd(num, hits);
+                lineMap[num] = lineMap.TryGetValue(num, out var known) ? Math.Max(known, hits) : hits;
         }
     }
 
-    return result.Count > 0 ? result : null;
+    return true;
 }
 
 static string NormalizePath(string path)
