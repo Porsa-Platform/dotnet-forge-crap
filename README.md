@@ -13,6 +13,9 @@ dotnet scripts/crap4cs.cs --
 # Analyze with an existing coverage file
 dotnet scripts/crap4cs.cs -- --coverage path/to/coverage.cobertura.xml
 
+# Merge every coverage file of a multi-project solution
+dotnet scripts/crap4cs.cs -- --coverage "TestResults/**/coverage.cobertura.xml"
+
 # Analyze specific source paths
 dotnet scripts/crap4cs.cs -- src/MyApp src/MyLib
 
@@ -28,7 +31,7 @@ dotnet scripts/crap4cs.cs -- --json
 crap4cs works in three steps:
 
 1. **Parse source files** — uses Roslyn to extract every method, constructor, property accessor, and local function, computing cyclomatic complexity for each.
-2. **Get coverage data** — either from a Cobertura XML file (`--coverage`) or by auto-detecting a test project and running `dotnet test --collect:"XPlat Code Coverage"`.
+2. **Get coverage data** — either from Cobertura XML files (`--coverage`, merged when several are given) or by auto-detecting a test project and running `dotnet test --collect:"XPlat Code Coverage"`.
 3. **Compute CRAP scores** — matches coverage data to methods by file and line range, then applies the CRAP formula.
 
 ## CRAP Formula
@@ -55,13 +58,15 @@ Each of these adds 1 to cyclomatic complexity:
 - `if` / `else if`
 - `for`, `foreach`, `while`, `do` loops
 - `case` labels (each)
+- switch expression arms (each, except the `_` discard)
+- `or` and `and` patterns
 - `catch` clauses
 - `&&`, `||` (conditional logical operators)
 - `?:` (ternary conditional)
 - `??` (null coalescing)
 - `?.` (conditional access)
 
-Base complexity is 1.
+Base complexity is 1. A local function is reported on its own and does not add to the complexity of its enclosing method.
 
 ## CLI
 
@@ -70,14 +75,54 @@ Usage: dotnet scripts/crap4cs.cs -- [options] [source-path ...]
 
 Options:
   --threshold N    CRAP score threshold (default 30). Methods below are hidden.
-  --coverage PATH  Path to Cobertura XML coverage file. If omitted, auto-runs
-                   dotnet test with XPlat Code Coverage on the first test project found.
+  --coverage PATH  Cobertura XML coverage file, or a glob pattern such as
+                   TestResults/**/coverage.cobertura.xml. Repeatable: every matching
+                   file is merged, keeping the highest hit count of each line.
+                   If omitted, auto-runs dotnet test with XPlat Code Coverage on the
+                   first test project found.
+  --exclude GLOB   Skip source files matching the pattern, relative to the source
+                   path (e.g. **/Migrations/**, **/obj/**). Repeatable.
+  --changed-since REF
+                   Keep only the methods with a line added or modified since the
+                   merge base of REF and HEAD (git diff REF...HEAD).
+  --missing-coverage MODE
+                   What to do with a method that has no coverage data: show it as
+                   N/A (default), count it as untested with zero, or skip it.
+  --affected-since REF
+                   Run, with coverage, only the test projects that contain or reference
+                   (transitively) a project changed since REF, then keep only the
+                   changed methods, as --changed-since REF does.
+  --list-affected  With --affected-since: print the selected test projects and exit.
+  --test-settings PATH
+                   .runsettings file passed to dotnet test by --affected-since.
+  --fail-above     Exit with 2 when a method reaches the threshold (1 is kept
+                   for usage and input errors).
   --format F       Output format: text or json (default text).
   --json           Short for --format json.
   --help           Show this help message.
 ```
 
 If no source paths are given, defaults to `src`.
+
+### Affected Tests
+
+In a solution with many test projects, `--affected-since REF` judges a change on the tests that can reach it:
+
+1. Lists the `.cs` files changed since the merge base of `REF` and `HEAD`.
+2. Finds the project of each file (nearest `.csproj`), then every test project (`Microsoft.NET.Test.Sdk`) that contains it or references it, directly or through other projects.
+3. Runs `dotnet test --collect "XPlat Code Coverage"` on each of them, and stops with exit code 1 if a test fails.
+4. Merges their coverage and reports only the methods with a changed line.
+
+```bash
+# Before a push: block when a changed method is risky
+dotnet scripts/crap4cs.cs -- Src --affected-since origin/main --missing-coverage zero \
+  --exclude "**/Migrations/**" --exclude "**/obj/**" --fail-above
+
+# See which test projects would run
+dotnet scripts/crap4cs.cs -- Src --affected-since origin/main --list-affected
+```
+
+Test projects without `Microsoft.NET.Test.Sdk` (for example those on Microsoft.Testing.Platform only) are not run.
 
 ### Coverage Auto-Discovery
 
@@ -113,6 +158,8 @@ SimpleMethod                   MyApp.Util                               1  100.0
 				"file": "/path/to/File.cs",
 				"class_name": "MyApp.Processor",
 				"method": "RiskyMethod",
+				"start_line": 12,
+				"end_line": 40,
 				"complexity": 14,
 				"coverage": 0.35,
 				"crap_score": 86.4
